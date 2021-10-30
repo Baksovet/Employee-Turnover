@@ -1,4 +1,3 @@
-# Import libraries & dataset ----
 library(tidyverse)
 library(data.table)
 library(rstudioapi)
@@ -19,17 +18,15 @@ names(raw) <- names(raw) %>%
   str_replace_all("/","_")
 
 raw %>% skim()
-
+raw$left <- raw$left %>% as_factor()
 raw$left %>% table() %>% prop.table()
 
-raw$left <- raw$left %>% as_factor()
-class(raw$left)
+
 
 # --------------------------------- Modeling ----------------------------------
 h2o.init()
 
 h2o_data <- raw %>% as.h2o()
-
 
 # Splitting the data ----
 h2o_data <- h2o_data %>% h2o.splitFrame(ratios = 0.8, seed = 123)
@@ -38,6 +35,7 @@ test <- h2o_data[[2]]
 
 target <- 'left'
 features <- raw %>% select(-left) %>% names()
+
 
 # Fitting h2o model ----
 model <- h2o.automl(
@@ -50,7 +48,8 @@ model <- h2o.automl(
   max_runtime_secs = 480)
 
 model@leaderboard %>% as.data.frame()
-model@leader
+model@leader 
+
 
 # Predicting the Test set results ----
 pred <- model@leader %>% h2o.predict(test) %>% as.data.frame()
@@ -59,6 +58,7 @@ pred <- model@leader %>% h2o.predict(test) %>% as.data.frame()
 model@leader %>% 
   h2o.performance(test) %>% 
   h2o.find_threshold_by_max_metric('f1') -> treshold
+
 
 # ----------------------------- Model evaluation -----------------------------
 
@@ -74,9 +74,11 @@ model@leader %>%
 
 
 # Area Under Curve (AUC) ----
-# threshold - proqnozları o ve 1 e cevirmek ucun secilmmis optimal limit xetdir
 # precision - tp/(tp+fp)
 # recall    - tp/(tp+fn)
+
+#---------------------------For test results-----------------------------------
+
 model@leader %>% 
   h2o.performance(test) %>% 
   h2o.metric() %>% 
@@ -100,6 +102,31 @@ highchart() %>%
   hc_title(text = "ROC Curve") %>% 
   hc_subtitle(text = "Model is performing much better than random guessing") 
 
+#----------------------------For train results---------------------------------
+
+model@leader %>% 
+  h2o.performance(train) %>% 
+  h2o.metric() %>% 
+  select(threshold,precision,recall,tpr,fpr) %>% 
+  add_column(tpr_r=runif(nrow(.),min=0.001,max=1)) %>% 
+  mutate(fpr_r=tpr_r) %>% 
+  arrange(tpr_r,fpr_r) -> deep_metrics2
+
+model@leader %>% 
+  h2o.performance(train) %>% 
+  h2o.auc() %>% round(2) -> auc2
+
+highchart() %>% 
+  hc_add_series(deep_metrics2, "scatter", hcaes(y=tpr,x=fpr), color='green', name='TPR') %>%
+  hc_add_series(deep_metrics2, "line", hcaes(y=tpr_r,x=fpr_r), color='red', name='Random Guess') %>% 
+  hc_add_annotation(
+    labels = list(
+      point = list(xAxis=0,yAxis=0,x=0.3,y=0.6),
+      text = glue('AUC = {enexpr(auc2)}'))
+  ) %>%
+  hc_title(text = "ROC Curve") %>% 
+  hc_subtitle(text = "Model is performing much better than random guessing") 
+
 
 # Check overfitting ----
 model@leader %>%
@@ -112,4 +139,9 @@ model@leader %>%
   mutate(gini = 2*value-1) %>%
   select(data,auc=value,gini)
 
+
+
+# Save model ----
+model@leaderboard %>% as_tibble() %>% slice(1) %>% pull(model_id) %>% 
+  h2o.getModel() %>% h2o.saveModel(path = path)
 
